@@ -1367,7 +1367,7 @@
                 statusEl.classList.add(dev > 0.100 ? 'status-crit' : dev > 0.020 ? 'status-warn' : 'status-ok');
             }
 
-            // Datenquellen-Kaskade: Direct → Proxy → Simulation
+            // Datenquellen-Kaskade: Grid Radar → netzfrequenz.info → Simulation
             async function fetchLiveFreq() {
                 // 1. Grid Radar direkt (CORS erlaubt)
                 try {
@@ -1375,13 +1375,7 @@
                     if (r.ok) { const f = parseGridRadar(await r.json()); if (!isNaN(f)) return f; }
                 } catch (_) { }
 
-                // 2. Grid Radar via allorigins Proxy
-                try {
-                    const r = await fetch('https://api.allorigins.win/get?url=' + encodeURIComponent(GRID_URL), { signal: AbortSignal.timeout(8000) });
-                    if (r.ok) { const f = parseGridRadar(JSON.parse((await r.json()).contents)); if (!isNaN(f)) return f; }
-                } catch (_) { }
-
-                // 3. netzfrequenz.info via allorigins
+                // 2. netzfrequenz.info via allorigins (kein API-Key)
                 try {
                     const r = await fetch('https://api.allorigins.win/get?url=' + encodeURIComponent('https://www.netzfrequenz.info/json/act.json'), { signal: AbortSignal.timeout(8000) });
                     if (r.ok) { const f = parseFloat((await r.json()).contents); if (f > 45 && f < 55) return f; }
@@ -1403,7 +1397,7 @@
             (async function poll() {
                 const f = await fetchLiveFreq();
                 if (f !== null) { liveFreq = f; tick(); }
-                setTimeout(poll, 15000);
+                setTimeout(poll, 30000);
             })();
 
         })();
