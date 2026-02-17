@@ -1397,7 +1397,7 @@
             (async function poll() {
                 const f = await fetchLiveFreq();
                 if (f !== null) { liveFreq = f; tick(); }
-                setTimeout(poll, 30000);
+                setTimeout(poll, 12000);
             })();
 
         })();
