@@ -1335,98 +1335,75 @@
                 }
             });
 
-            /* ═══════════════════════════════════════════════════
-               LIVE GRID FREQUENCY — Instant Sim + Background API
-               ═══════════════════════════════════════════════════ */
+            /* ═══════════════════════════════════════════════
+               NETZFREQUENZ — Grid Radar API + O-U Fallback
+               ═══════════════════════════════════════════════ */
             const freqEl = document.getElementById('freq-value');
-            const gridStatusEl = document.querySelector('.grid-status');
-
+            const statusEl = document.querySelector('.grid-status');
             const API_TOKEN = 'qpbdIrxJYyLRVFxfIkVAuvSca1I2QxpEvLJIlFMWUIY3GGWh7mo0uITigHRlV+oQM31DZKiNyJWT2TiDyfvIWYr5fDF6YCo76vnSQfzmz6LekAwCO1+uOyZ5oitc1+xs';
+            const GRID_URL = `https://api.gridradar.net/query?token=${API_TOKEN}&metric=frequency-ucte-median-1s&format=json`;
 
             let simFreq = 50.0;
             let liveFreq = null;
 
-            function simulateOU() {
-                simFreq += 0.1 * (50.0 - simFreq) + (Math.random() - 0.5) * 0.015;
-                return simFreq;
+            // Ornstein-Uhlenbeck Prozess (Mean-Reverting Simulation)
+            const simulateOU = () => (simFreq += 0.1 * (50.0 - simFreq) + (Math.random() - 0.5) * 0.015);
+
+            // Grid Radar Response: [{datapoints: [[freq, timestamp], ...], target: "..."}]
+            function parseGridRadar(data) {
+                const pts = data?.[0]?.datapoints;
+                if (!pts?.length) return NaN;
+                const f = parseFloat(pts[pts.length - 1][0]);
+                return (f > 45 && f < 55) ? f : NaN;
             }
 
+            // UCTE Schwellwerte: OK ≤ 20mHz, WARN > 20mHz, CRIT > 100mHz
             function renderFreq(freq) {
                 if (!freqEl) return;
                 freqEl.textContent = freq.toFixed(3) + ' Hz';
-                gridStatusEl.classList.remove('status-ok', 'status-warn', 'status-crit');
                 const dev = Math.abs(freq - 50.0);
-                if (dev > 0.100) gridStatusEl.classList.add('status-crit');
-                else if (dev > 0.020) gridStatusEl.classList.add('status-warn');
-                else gridStatusEl.classList.add('status-ok');
+                statusEl.classList.remove('status-ok', 'status-warn', 'status-crit');
+                statusEl.classList.add(dev > 0.100 ? 'status-crit' : dev > 0.020 ? 'status-warn' : 'status-ok');
             }
 
-            // Sequential fetch with logging — no Promise.any (SES lockdown safe)
+            // Datenquellen-Kaskade: Direct → Proxy → Simulation
             async function fetchLiveFreq() {
-                // Try 1: allorigins /get wraps response in JSON {contents: "..."}
+                // 1. Grid Radar direkt (CORS erlaubt)
                 try {
-                    const r = await fetch('https://api.allorigins.win/get?url=' + encodeURIComponent('https://www.netzfrequenz.info/json/act.json'), { signal: AbortSignal.timeout(4000) });
-                    if (r.ok) {
-                        const wrap = await r.json();
-                        const f = parseFloat(wrap.contents);
-                        console.log('[FREQ] allorigins netzfrequenz:', f);
-                        if (f > 45 && f < 55) return f;
-                    }
-                } catch (e) { console.warn('[FREQ] allorigins netzfrequenz fail:', e.message); }
+                    const r = await fetch(GRID_URL, { signal: AbortSignal.timeout(5000) });
+                    if (r.ok) { const f = parseGridRadar(await r.json()); if (!isNaN(f)) return f; }
+                } catch (_) { }
 
-                // Try 2: allorigins XML
+                // 2. Grid Radar via allorigins Proxy
                 try {
-                    const r = await fetch('https://api.allorigins.win/get?url=' + encodeURIComponent('https://dat.netzfrequenzmessung.de:9080/frequenz.xml'), { signal: AbortSignal.timeout(4000) });
-                    if (r.ok) {
-                        const wrap = await r.json();
-                        const doc = new DOMParser().parseFromString(wrap.contents, 'text/xml');
-                        const f = parseFloat(doc.getElementsByTagName('f')[0]?.textContent);
-                        console.log('[FREQ] allorigins XML:', f);
-                        if (f > 45 && f < 55) return f;
-                    }
-                } catch (e) { console.warn('[FREQ] allorigins XML fail:', e.message); }
+                    const r = await fetch('https://api.allorigins.win/get?url=' + encodeURIComponent(GRID_URL), { signal: AbortSignal.timeout(8000) });
+                    if (r.ok) { const f = parseGridRadar(JSON.parse((await r.json()).contents)); if (!isNaN(f)) return f; }
+                } catch (_) { }
 
-                // Try 3: Grid Radar via allorigins
+                // 3. netzfrequenz.info via allorigins
                 try {
-                    const r = await fetch('https://api.allorigins.win/get?url=' + encodeURIComponent(`https://api.gridradar.net/query?token=${API_TOKEN}&metric=frequency-ucte-median-1s&format=json`), { signal: AbortSignal.timeout(4000) });
-                    if (r.ok) {
-                        const wrap = await r.json();
-                        const data = JSON.parse(wrap.contents);
-                        const f = parseFloat(data?.data?.[data.data.length - 1]?.[1]);
-                        console.log('[FREQ] Grid Radar:', f);
-                        if (f > 45 && f < 55) return f;
-                    }
-                } catch (e) { console.warn('[FREQ] Grid Radar fail:', e.message); }
+                    const r = await fetch('https://api.allorigins.win/get?url=' + encodeURIComponent('https://www.netzfrequenz.info/json/act.json'), { signal: AbortSignal.timeout(8000) });
+                    if (r.ok) { const f = parseFloat((await r.json()).contents); if (f > 45 && f < 55) return f; }
+                } catch (_) { }
 
-                console.warn('[FREQ] All sources failed, using simulation');
                 return null;
             }
 
-            // Render loop: simulation runs instantly, live data overwrites
+            // Display-Loop: Simulation sofort, Live-Daten überschreiben
             function tick() {
-                if (liveFreq !== null) {
-                    renderFreq(liveFreq);
-                    simFreq = liveFreq; // keep sim synced
-                } else {
-                    renderFreq(simulateOU());
-                }
+                renderFreq(liveFreq !== null ? liveFreq : simulateOU());
+                if (liveFreq !== null) simFreq = liveFreq;
             }
 
-            // Instant start
             tick();
             setInterval(tick, 3000);
 
-            // Background API fetch every 10s
-            async function bgFetch() {
+            // API-Abfrage im Hintergrund (15s Intervall, Grid Radar Free Tier)
+            (async function poll() {
                 const f = await fetchLiveFreq();
-                if (f !== null) {
-                    liveFreq = f;
-                    tick(); // immediately show live data
-                }
-                // If fetch fails, keep using last live value (don't reset to null)
-            }
-            bgFetch();
-            setInterval(bgFetch, 10000);
+                if (f !== null) { liveFreq = f; tick(); }
+                setTimeout(poll, 15000);
+            })();
 
         })();
     </script>
