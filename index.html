@@ -1336,115 +1336,24 @@
             });
 
             /* ═══════════════════════════════════════════════════
-               LIVE GRID FREQUENCY — Multi-Source + O-U Fallback
+               LIVE GRID FREQUENCY — Instant Sim + Background API
                ═══════════════════════════════════════════════════ */
             const freqEl = document.getElementById('freq-value');
-            const timeEl = document.getElementById('time-dev-value');
             const gridStatusEl = document.querySelector('.grid-status');
 
             const API_TOKEN = '8PZjhB32S6thZeVb5+dTawsSrlLlOwh5ulqD5T3vsBpNV3bSP67OISgjJjfxRFS8d1rBQ9dYrosIluM6V2uIb1C+NfCfakVsCnlFaAgz5KToSnbo7P3UvXr8kWGmZk76';
 
-            // Multiple CORS proxies for resilience
-            const PROXIES = [
-                url => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url),
-                url => 'https://corsproxy.io/?' + encodeURIComponent(url),
-                url => 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(url),
-            ];
-
-            // Try fetching through multiple proxies
-            async function proxyFetch(targetUrl) {
-                for (const mkUrl of PROXIES) {
-                    try {
-                        const res = await fetch(mkUrl(targetUrl + (targetUrl.includes('?') ? '&' : '?') + '_t=' + Date.now()), {
-                            signal: AbortSignal.timeout(4000)
-                        });
-                        if (res.ok) return res;
-                    } catch (_) { /* next proxy */ }
-                }
-                return null;
-            }
-
-            // O-U simulation state
             let simFreq = 50.0;
-            let simTime = 0.0;
+            let liveFreq = null;
 
             function simulateOU() {
                 simFreq += 0.1 * (50.0 - simFreq) + (Math.random() - 0.5) * 0.015;
-                simTime += (Math.random() - 0.5) * 0.008 - simTime * 0.02;
-                return { freq: simFreq, time: simTime };
+                return simFreq;
             }
 
-            async function updateGridData() {
-                if (!freqEl || !timeEl) return;
-                let freq = null, timeDev = null, source = 'SIM';
-
-                // ── Source 1: Grid Radar API ──
-                try {
-                    const url = `https://api.gridradar.net/query?token=${encodeURIComponent(API_TOKEN)}&metric=frequency-ucte-median-1s,net-time&format=json`;
-                    const res = await proxyFetch(url);
-                    if (res) {
-                        const data = await res.json();
-                        if (data?.data?.length > 0) {
-                            const row = data.data[data.data.length - 1];
-                            freq = parseFloat(row[1]);
-                            timeDev = parseFloat(row[2]);
-                            if (!isNaN(freq) && freq > 45 && freq < 55) {
-                                source = 'LIVE';
-                            } else { freq = null; timeDev = null; }
-                        }
-                    }
-                } catch (_) { }
-
-                // ── Source 2: netzfrequenzmessung.de (XML) ──
-                if (freq === null) {
-                    try {
-                        const res = await proxyFetch('https://dat.netzfrequenzmessung.de:9080/frequenz.xml');
-                        if (res) {
-                            const str = await res.text();
-                            const doc = new DOMParser().parseFromString(str, 'text/xml');
-                            const fNode = doc.getElementsByTagName('f')[0];
-                            if (fNode) {
-                                freq = parseFloat(fNode.textContent);
-                                source = 'LIVE';
-                            }
-                        }
-                    } catch (_) { }
-                }
-
-                // ── Source 3: netzfrequenz.info (JSON) ──
-                if (freq === null) {
-                    try {
-                        const res = await proxyFetch('https://www.netzfrequenz.info/json/act.json');
-                        if (res) {
-                            const data = await res.json();
-                            const f = parseFloat(data);
-                            if (!isNaN(f) && f > 45 && f < 55) {
-                                freq = f;
-                                source = 'LIVE';
-                            }
-                        }
-                    } catch (_) { }
-                }
-
-                // ── Fallback: Ornstein-Uhlenbeck Simulation ──
-                if (freq === null || isNaN(freq)) {
-                    const sim = simulateOU();
-                    freq = sim.freq;
-                    if (timeDev === null) timeDev = sim.time;
-                    source = 'SIM';
-                } else {
-                    // Sync simulation seed with real data
-                    simFreq = freq;
-                    if (timeDev !== null) simTime = timeDev;
-                }
-
-                // ── Rendering ──
+            function renderFreq(freq) {
+                if (!freqEl) return;
                 freqEl.textContent = freq.toFixed(3) + ' Hz';
-                if (timeDev !== null && !isNaN(timeDev)) {
-                    timeEl.textContent = (timeDev >= 0 ? '+' : '') + timeDev.toFixed(3) + ' s';
-                }
-
-                // Status colors (UCTE thresholds)
                 gridStatusEl.classList.remove('status-ok', 'status-warn', 'status-crit');
                 const dev = Math.abs(freq - 50.0);
                 if (dev > 0.100) gridStatusEl.classList.add('status-crit');
@@ -1452,9 +1361,56 @@
                 else gridStatusEl.classList.add('status-ok');
             }
 
-            // Update alle 3s (Simulation smooth), API hat internes Caching
-            updateGridData();
-            setInterval(updateGridData, 3000);
+            // Quick proxy fetch — 2s timeout, single attempt
+            async function quickFetch(url) {
+                const res = await fetch(url, { signal: AbortSignal.timeout(2000) });
+                if (!res.ok) throw new Error(res.status);
+                return res;
+            }
+
+            // Try all sources in PARALLEL — first valid one wins
+            async function fetchLiveFreq() {
+                const proxy = u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u) + '&t=' + Date.now();
+
+                const attempts = [
+                    // Grid Radar
+                    quickFetch(proxy(`https://api.gridradar.net/query?token=${encodeURIComponent(API_TOKEN)}&metric=frequency-ucte-median-1s&format=json`))
+                        .then(r => r.json())
+                        .then(d => { const f = parseFloat(d?.data?.[d.data.length - 1]?.[1]); if (f > 45 && f < 55) return f; throw 0; }),
+                    // netzfrequenzmessung.de XML
+                    quickFetch(proxy('https://dat.netzfrequenzmessung.de:9080/frequenz.xml'))
+                        .then(r => r.text())
+                        .then(s => { const f = parseFloat(new DOMParser().parseFromString(s, 'text/xml').getElementsByTagName('f')[0]?.textContent); if (f > 45 && f < 55) return f; throw 0; }),
+                    // netzfrequenz.info JSON
+                    quickFetch(proxy('https://www.netzfrequenz.info/json/act.json'))
+                        .then(r => r.json())
+                        .then(d => { const f = parseFloat(d); if (f > 45 && f < 55) return f; throw 0; }),
+                ];
+
+                try {
+                    return await Promise.any(attempts);
+                } catch (_) { return null; }
+            }
+
+            // Render loop: always runs, uses live or sim
+            function tick() {
+                const freq = liveFreq ?? simulateOU();
+                renderFreq(freq);
+                if (liveFreq !== null) simFreq = liveFreq; // keep sim synced
+            }
+
+            // Instant start with simulation
+            tick();
+            setInterval(tick, 3000);
+
+            // Background: try to fetch live data every 10s
+            async function bgFetch() {
+                const f = await fetchLiveFreq();
+                if (f !== null) { liveFreq = f; tick(); }
+                else { liveFreq = null; }
+            }
+            bgFetch();
+            setInterval(bgFetch, 10000);
 
         })();
     </script>
