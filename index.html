@@ -1361,28 +1361,45 @@
                 else gridStatusEl.classList.add('status-ok');
             }
 
-            // Race all sources in parallel — first valid response wins
+            // Sequential fetch with logging — no Promise.any (SES lockdown safe)
             async function fetchLiveFreq() {
-                const proxy = 'https://corsproxy.io/?';
-                const attempts = [
-                    // Source 1: netzfrequenzmessung.de (no API key needed)
-                    fetch(proxy + encodeURIComponent('https://dat.netzfrequenzmessung.de:9080/frequenz.xml'), { signal: AbortSignal.timeout(3000) })
-                        .then(r => { if (!r.ok) throw 0; return r.text(); })
-                        .then(s => {
-                            const f = parseFloat(new DOMParser().parseFromString(s, 'text/xml').getElementsByTagName('f')[0]?.textContent);
-                            if (f > 45 && f < 55) return f; throw 0;
-                        }),
-                    // Source 2: netzfrequenz.info (no API key needed)
-                    fetch(proxy + encodeURIComponent('https://www.netzfrequenz.info/json/act.json'), { signal: AbortSignal.timeout(3000) })
-                        .then(r => { if (!r.ok) throw 0; return r.json(); })
-                        .then(d => { const f = parseFloat(d); if (f > 45 && f < 55) return f; throw 0; }),
-                    // Source 3: Grid Radar (needs valid token — currently 403)
-                    fetch(proxy + encodeURIComponent(`https://api.gridradar.net/query?token=${API_TOKEN}&metric=frequency-ucte-median-1s&format=json`), { signal: AbortSignal.timeout(3000) })
-                        .then(r => { if (!r.ok) throw 0; return r.json(); })
-                        .then(d => { const f = parseFloat(d?.data?.[d.data.length - 1]?.[1]); if (f > 45 && f < 55) return f; throw 0; }),
-                ];
-                try { return await Promise.any(attempts); }
-                catch (_) { return null; }
+                // Try 1: allorigins /get wraps response in JSON {contents: "..."}
+                try {
+                    const r = await fetch('https://api.allorigins.win/get?url=' + encodeURIComponent('https://www.netzfrequenz.info/json/act.json'), { signal: AbortSignal.timeout(4000) });
+                    if (r.ok) {
+                        const wrap = await r.json();
+                        const f = parseFloat(wrap.contents);
+                        console.log('[FREQ] allorigins netzfrequenz:', f);
+                        if (f > 45 && f < 55) return f;
+                    }
+                } catch (e) { console.warn('[FREQ] allorigins netzfrequenz fail:', e.message); }
+
+                // Try 2: allorigins XML
+                try {
+                    const r = await fetch('https://api.allorigins.win/get?url=' + encodeURIComponent('https://dat.netzfrequenzmessung.de:9080/frequenz.xml'), { signal: AbortSignal.timeout(4000) });
+                    if (r.ok) {
+                        const wrap = await r.json();
+                        const doc = new DOMParser().parseFromString(wrap.contents, 'text/xml');
+                        const f = parseFloat(doc.getElementsByTagName('f')[0]?.textContent);
+                        console.log('[FREQ] allorigins XML:', f);
+                        if (f > 45 && f < 55) return f;
+                    }
+                } catch (e) { console.warn('[FREQ] allorigins XML fail:', e.message); }
+
+                // Try 3: Grid Radar via allorigins
+                try {
+                    const r = await fetch('https://api.allorigins.win/get?url=' + encodeURIComponent(`https://api.gridradar.net/query?token=${API_TOKEN}&metric=frequency-ucte-median-1s&format=json`), { signal: AbortSignal.timeout(4000) });
+                    if (r.ok) {
+                        const wrap = await r.json();
+                        const data = JSON.parse(wrap.contents);
+                        const f = parseFloat(data?.data?.[data.data.length - 1]?.[1]);
+                        console.log('[FREQ] Grid Radar:', f);
+                        if (f > 45 && f < 55) return f;
+                    }
+                } catch (e) { console.warn('[FREQ] Grid Radar fail:', e.message); }
+
+                console.warn('[FREQ] All sources failed, using simulation');
+                return null;
             }
 
             // Render loop: simulation runs instantly, live data overwrites
