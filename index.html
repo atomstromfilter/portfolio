@@ -1370,21 +1370,19 @@
 
             // Try all sources in PARALLEL — first valid one wins
             async function fetchLiveFreq() {
-                const proxy = u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u) + '&t=' + Date.now();
-
                 const attempts = [
-                    // Grid Radar
-                    quickFetch(proxy(`https://api.gridradar.net/query?token=${encodeURIComponent(API_TOKEN)}&metric=frequency-ucte-median-1s&format=json`))
+                    // Grid Radar via corsproxy.io (was working before)
+                    quickFetch('https://corsproxy.io/?' + encodeURIComponent(`https://api.gridradar.net/query?token=${API_TOKEN}&metric=frequency-ucte-median-1s&format=json`))
+                        .then(r => r.json())
+                        .then(d => { const f = parseFloat(d?.data?.[d.data.length - 1]?.[1]); if (f > 45 && f < 55) return f; throw 0; }),
+                    // Grid Radar via allorigins (backup proxy)
+                    quickFetch('https://api.allorigins.win/raw?url=' + encodeURIComponent(`https://api.gridradar.net/query?token=${API_TOKEN}&metric=frequency-ucte-median-1s&format=json`))
                         .then(r => r.json())
                         .then(d => { const f = parseFloat(d?.data?.[d.data.length - 1]?.[1]); if (f > 45 && f < 55) return f; throw 0; }),
                     // netzfrequenzmessung.de XML
-                    quickFetch(proxy('https://dat.netzfrequenzmessung.de:9080/frequenz.xml'))
+                    quickFetch('https://corsproxy.io/?' + encodeURIComponent('https://dat.netzfrequenzmessung.de:9080/frequenz.xml'))
                         .then(r => r.text())
                         .then(s => { const f = parseFloat(new DOMParser().parseFromString(s, 'text/xml').getElementsByTagName('f')[0]?.textContent); if (f > 45 && f < 55) return f; throw 0; }),
-                    // netzfrequenz.info JSON
-                    quickFetch(proxy('https://www.netzfrequenz.info/json/act.json'))
-                        .then(r => r.json())
-                        .then(d => { const f = parseFloat(d); if (f > 45 && f < 55) return f; throw 0; }),
                 ];
 
                 try {
