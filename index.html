@@ -1361,51 +1361,52 @@
                 else gridStatusEl.classList.add('status-ok');
             }
 
-            // Quick proxy fetch — 2s timeout, single attempt
-            async function quickFetch(url) {
-                const res = await fetch(url, { signal: AbortSignal.timeout(2000) });
-                if (!res.ok) throw new Error(res.status);
-                return res;
-            }
-
-            // Try all sources in PARALLEL — first valid one wins
+            // Exact working fetch pattern (proven before restructure)
             async function fetchLiveFreq() {
-                const attempts = [
-                    // Grid Radar via corsproxy.io (was working before)
-                    quickFetch('https://corsproxy.io/?' + encodeURIComponent(`https://api.gridradar.net/query?token=${API_TOKEN}&metric=frequency-ucte-median-1s&format=json`))
-                        .then(r => r.json())
-                        .then(d => { const f = parseFloat(d?.data?.[d.data.length - 1]?.[1]); if (f > 45 && f < 55) return f; throw 0; }),
-                    // Grid Radar via allorigins (backup proxy)
-                    quickFetch('https://api.allorigins.win/raw?url=' + encodeURIComponent(`https://api.gridradar.net/query?token=${API_TOKEN}&metric=frequency-ucte-median-1s&format=json`))
-                        .then(r => r.json())
-                        .then(d => { const f = parseFloat(d?.data?.[d.data.length - 1]?.[1]); if (f > 45 && f < 55) return f; throw 0; }),
-                    // netzfrequenzmessung.de XML
-                    quickFetch('https://corsproxy.io/?' + encodeURIComponent('https://dat.netzfrequenzmessung.de:9080/frequenz.xml'))
-                        .then(r => r.text())
-                        .then(s => { const f = parseFloat(new DOMParser().parseFromString(s, 'text/xml').getElementsByTagName('f')[0]?.textContent); if (f > 45 && f < 55) return f; throw 0; }),
-                ];
-
                 try {
-                    return await Promise.any(attempts);
-                } catch (_) { return null; }
+                    const proxy = 'https://corsproxy.io/?';
+                    const targetUrl = `https://api.gridradar.net/query?token=${API_TOKEN}&metric=frequency-ucte-median-1s,net-time&format=json`;
+                    const response = await fetch(proxy + encodeURIComponent(targetUrl));
+                    if (!response.ok) {
+                        console.warn('[FREQ] Proxy status:', response.status);
+                        return null;
+                    }
+                    const data = await response.json();
+                    console.log('[FREQ] API response:', data);
+                    if (data && data.data && data.data.length > 0) {
+                        const lastRow = data.data[data.data.length - 1];
+                        const f = parseFloat(lastRow[1]);
+                        if (!isNaN(f) && f > 45 && f < 55) return f;
+                    }
+                    return null;
+                } catch (err) {
+                    console.warn('[FREQ] Fetch error:', err.message);
+                    return null;
+                }
             }
 
-            // Render loop: always runs, uses live or sim
+            // Render loop: simulation runs instantly, live data overwrites
             function tick() {
-                const freq = liveFreq ?? simulateOU();
-                renderFreq(freq);
-                if (liveFreq !== null) simFreq = liveFreq; // keep sim synced
+                if (liveFreq !== null) {
+                    renderFreq(liveFreq);
+                    simFreq = liveFreq; // keep sim synced
+                } else {
+                    renderFreq(simulateOU());
+                }
             }
 
-            // Instant start with simulation
+            // Instant start
             tick();
             setInterval(tick, 3000);
 
-            // Background: try to fetch live data every 10s
+            // Background API fetch every 10s
             async function bgFetch() {
                 const f = await fetchLiveFreq();
-                if (f !== null) { liveFreq = f; tick(); }
-                else { liveFreq = null; }
+                if (f !== null) {
+                    liveFreq = f;
+                    tick(); // immediately show live data
+                }
+                // If fetch fails, keep using last live value (don't reset to null)
             }
             bgFetch();
             setInterval(bgFetch, 10000);
