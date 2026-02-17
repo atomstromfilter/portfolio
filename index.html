@@ -1341,7 +1341,7 @@
             const freqEl = document.getElementById('freq-value');
             const gridStatusEl = document.querySelector('.grid-status');
 
-            const API_TOKEN = '8PZjhB32S6thZeVb5+dTawsSrlLlOwh5ulqD5T3vsBpNV3bSP67OISgjJjfxRFS8d1rBQ9dYrosIluM6V2uIb1C+NfCfakVsCnlFaAgz5KToSnbo7P3UvXr8kWGmZk76';
+            const API_TOKEN = 'qpbdIrxJYyLRVFxfIkVAuvSca1I2QxpEvLJIlFMWUIY3GGWh7mo0uITigHRlV+oQM31DZKiNyJWT2TiDyfvIWYr5fDF6YCo76vnSQfzmz6LekAwCO1+uOyZ5oitc1+xs';
 
             let simFreq = 50.0;
             let liveFreq = null;
@@ -1361,28 +1361,28 @@
                 else gridStatusEl.classList.add('status-ok');
             }
 
-            // Exact working fetch pattern (proven before restructure)
+            // Race all sources in parallel — first valid response wins
             async function fetchLiveFreq() {
-                try {
-                    const proxy = 'https://corsproxy.io/?';
-                    const targetUrl = `https://api.gridradar.net/query?token=${API_TOKEN}&metric=frequency-ucte-median-1s,net-time&format=json`;
-                    const response = await fetch(proxy + encodeURIComponent(targetUrl));
-                    if (!response.ok) {
-                        console.warn('[FREQ] Proxy status:', response.status);
-                        return null;
-                    }
-                    const data = await response.json();
-                    console.log('[FREQ] API response:', data);
-                    if (data && data.data && data.data.length > 0) {
-                        const lastRow = data.data[data.data.length - 1];
-                        const f = parseFloat(lastRow[1]);
-                        if (!isNaN(f) && f > 45 && f < 55) return f;
-                    }
-                    return null;
-                } catch (err) {
-                    console.warn('[FREQ] Fetch error:', err.message);
-                    return null;
-                }
+                const proxy = 'https://corsproxy.io/?';
+                const attempts = [
+                    // Source 1: netzfrequenzmessung.de (no API key needed)
+                    fetch(proxy + encodeURIComponent('https://dat.netzfrequenzmessung.de:9080/frequenz.xml'), { signal: AbortSignal.timeout(3000) })
+                        .then(r => { if (!r.ok) throw 0; return r.text(); })
+                        .then(s => {
+                            const f = parseFloat(new DOMParser().parseFromString(s, 'text/xml').getElementsByTagName('f')[0]?.textContent);
+                            if (f > 45 && f < 55) return f; throw 0;
+                        }),
+                    // Source 2: netzfrequenz.info (no API key needed)
+                    fetch(proxy + encodeURIComponent('https://www.netzfrequenz.info/json/act.json'), { signal: AbortSignal.timeout(3000) })
+                        .then(r => { if (!r.ok) throw 0; return r.json(); })
+                        .then(d => { const f = parseFloat(d); if (f > 45 && f < 55) return f; throw 0; }),
+                    // Source 3: Grid Radar (needs valid token — currently 403)
+                    fetch(proxy + encodeURIComponent(`https://api.gridradar.net/query?token=${API_TOKEN}&metric=frequency-ucte-median-1s&format=json`), { signal: AbortSignal.timeout(3000) })
+                        .then(r => { if (!r.ok) throw 0; return r.json(); })
+                        .then(d => { const f = parseFloat(d?.data?.[d.data.length - 1]?.[1]); if (f > 45 && f < 55) return f; throw 0; }),
+                ];
+                try { return await Promise.any(attempts); }
+                catch (_) { return null; }
             }
 
             // Render loop: simulation runs instantly, live data overwrites
